@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"rohansuri.com/file-explorer/internal/api"
+	"rohansuri.com/file-explorer/internal/db"
 )
 
 type config struct {
-	ServerPort string
+	ServerPort  string
+	DatabaseURL string
 }
 
 func main() {
@@ -21,13 +24,22 @@ func main() {
 
 func run() error {
 	cfg := config{
-		ServerPort: getEnv("PORT", "8080"),
+		ServerPort:  getEnv("PORT", "8080"),
+		DatabaseURL: getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/file-explorer"),
 	}
 
-	log.Printf("Server running on http://localhost:%s", cfg.ServerPort)
+	ctx := context.Background()
+
+	database, err := db.New(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return err
+	}
+	log.Println("database connected and migrations applied")
+
+	log.Printf("server running on http://localhost:%s", cfg.ServerPort)
 	srv := &http.Server{
 		Addr:         ":" + cfg.ServerPort,
-		Handler:      api.NewRouter(),
+		Handler:      api.NewRouter(database),
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 30 * time.Second,
 		IdleTimeout:  60 * time.Second,
