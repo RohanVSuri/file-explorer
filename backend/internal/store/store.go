@@ -38,36 +38,36 @@ func (s *Store) Upload(_ context.Context, r io.Reader) (hash string, size int64,
 		return "", 0, fmt.Errorf("create temp file: %w", err)
 	}
 	tmpPath := tmp.Name()
-	defer func() { // this is going to run at the end of the function to cleanup the temp file
-		tmp.Close()
-		if err != nil {
-			os.Remove(tmpPath)
-		}
-	}()
 
 	hasher := sha256.New()
 	tee := io.TeeReader(r, hasher)
-	// io.copy is goated and handles the chunking for us. (by 32 kb chunks)
 	if size, err = io.Copy(tmp, tee); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
 		return "", 0, fmt.Errorf("write upload: %w", err)
 	}
 	if err = tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
 		return "", 0, fmt.Errorf("sync upload: %w", err)
 	}
+	tmp.Close() // done writing; close before any rename/remove
 
 	hash = hex.EncodeToString(hasher.Sum(nil))
-	// we're writing to the hasher incrementally as we read the file, and then computing the hash at the end
-	// rather than reading the entire file into memory when we want to compute the hash
 	dest := s.blobPath(hash)
 
 	if err = os.MkdirAll(filepath.Dir(dest), 0755); err != nil {
+		os.Remove(tmpPath)
 		return "", 0, fmt.Errorf("create blob dir: %w", err)
 	}
-	// If the blob already exists (dedup), skip the rename — the file is identical.
+
 	if _, statErr := os.Stat(dest); os.IsNotExist(statErr) {
 		if err = os.Rename(tmpPath, dest); err != nil {
+			os.Remove(tmpPath)
 			return "", 0, fmt.Errorf("commit blob: %w", err)
 		}
+	} else {
+		os.Remove(tmpPath)
 	}
 	return hash, size, nil
 }
