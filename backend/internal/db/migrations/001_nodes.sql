@@ -1,6 +1,6 @@
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
-CREATE TABLE nodes (
+CREATE TABLE IF NOT EXISTS nodes (
   id           BIGSERIAL PRIMARY KEY,
   parent_id    BIGINT REFERENCES nodes(id),
   name         TEXT NOT NULL,
@@ -14,5 +14,5 @@ CREATE TABLE nodes (
 );
 
 -- COALESCE handles root nodes (parent_id IS NULL) so two root-level 'foo' entries are rejected
-CREATE UNIQUE INDEX nodes_parent_name_uidx ON nodes(COALESCE(parent_id, 0), name) WHERE deleted_at IS NULL;
-CREATE INDEX nodes_name_trgm_idx ON nodes USING gin(name gin_trgm_ops);
+CREATE UNIQUE INDEX IF NOT EXISTS nodes_parent_name_uidx ON nodes(COALESCE(parent_id, 0), name) WHERE deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS nodes_name_trgm_idx ON nodes USING gin(name gin_trgm_ops);

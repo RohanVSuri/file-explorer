@@ -1,20 +1,18 @@
 package api
 
 import (
-	"encoding/json"
-	"net/http"
-
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/go-chi/cors"
 	"rohansuri.com/file-explorer/internal/db"
+	"rohansuri.com/file-explorer/internal/store"
+	"net/http"
 )
 
-func NewRouter(database *db.DB) http.Handler {
-	_ = database // initialize database for now
+func NewRouter(database *db.DB, blobStore *store.Store) http.Handler {
+	h := &Handlers{db: database, store: blobStore}
 
 	r := chi.NewRouter()
-
 	r.Use(middleware.Logger)
 	r.Use(middleware.Recoverer)
 	r.Use(cors.Handler(cors.Options{
@@ -27,11 +25,7 @@ func NewRouter(database *db.DB) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"message": "Hello from the filesystem API"})
 	})
 
-	return r
-}
+	h.routes(r)
 
-func writeJSON(w http.ResponseWriter, status int, v any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(v)
+	return r
 }

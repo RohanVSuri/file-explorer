@@ -34,6 +34,13 @@ func New(ctx context.Context, connString string) (*DB, error) {
 	return d, nil
 }
 
+// Truncate clears all nodes and resets the ID sequence.
+// Only for use in tests.
+func (d *DB) Truncate(ctx context.Context) error {
+	_, err := d.pool.Exec(ctx, "TRUNCATE nodes RESTART IDENTITY CASCADE")
+	return err
+}
+
 func (d *DB) migrate(ctx context.Context) error {
 	_, err := d.pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (

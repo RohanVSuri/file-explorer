@@ -2,6 +2,7 @@ package db
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -28,6 +29,9 @@ func scanNode(scan func(dest ...any) error) (Node, error) {
 	err := scan(&n.ID, &n.ParentID, &n.Name, &n.Type,
 		&n.Size, &n.MimeType, &n.ContentHash,
 		&n.CreatedAt, &n.UpdatedAt, &n.DeletedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Node{}, ErrNotFound
+	}
 	return n, err
 }
 
@@ -72,22 +76,77 @@ func (d *DB) InsertNode(ctx context.Context, p InsertNodeParams) (Node, error) {
 	row := d.pool.QueryRow(ctx,
 		"INSERT INTO nodes (parent_id, name, type, size, mime_type, content_hash) VALUES ($1,$2,$3,$4,$5,$6) RETURNING "+nodeColumns,
 		p.ParentID, p.Name, p.Type, p.Size, p.MimeType, p.ContentHash)
-	return scanNode(row.Scan)
+	n, err := scanNode(row.Scan)
+	if isUniqueViolation(err) {
+		return Node{}, ErrNameConflict
+	}
+	return n, err
 }
 
 func (d *DB) RenameNode(ctx context.Context, id int64, name string) (Node, error) {
 	row := d.pool.QueryRow(ctx,
 		"UPDATE nodes SET name = $1, updated_at = NOW() WHERE id = $2 RETURNING "+nodeColumns,
 		name, id)
-	return scanNode(row.Scan)
+	n, err := scanNode(row.Scan)
+	if isUniqueViolation(err) {
+		return Node{}, ErrNameConflict
+	}
+	return n, err
 }
 
-// MoveNode updates parent_id; newParentID nil moves the node to root.
-func (d *DB) MoveNode(ctx context.Context, id int64, newParentID *int64) (Node, error) {
-	row := d.pool.QueryRow(ctx,
+// SafeMoveNode moves a node to a new parent inside a transaction with cycle detection.
+// newParentID nil moves the node to root.
+func (d *DB) SafeMoveNode(ctx context.Context, id int64, newParentID *int64) (Node, error) {
+	tx, err := d.pool.Begin(ctx)
+	if err != nil {
+		return Node{}, err
+	}
+	defer tx.Rollback(ctx)
+
+	// Lock the node to prevent concurrent moves racing through the cycle check.
+	if _, err := tx.Exec(ctx, "SELECT id FROM nodes WHERE id = $1 FOR UPDATE", id); err != nil {
+		return Node{}, err
+	}
+
+	if newParentID != nil {
+		// Walk descendants of the node being moved; target must not be among them.
+		rows, err := tx.Query(ctx, `
+			WITH RECURSIVE subtree AS (
+				SELECT id FROM nodes WHERE id = $1
+				UNION ALL
+				SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+			)
+			SELECT id FROM subtree
+		`, id)
+		if err != nil {
+			return Node{}, err
+		}
+		for rows.Next() {
+			var did int64
+			if err := rows.Scan(&did); err != nil {
+				rows.Close()
+				return Node{}, err
+			}
+			if did == *newParentID {
+				rows.Close()
+				return Node{}, ErrCycleDetected
+			}
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return Node{}, err
+		}
+	}
+
+	row := tx.QueryRow(ctx,
 		"UPDATE nodes SET parent_id = $1, updated_at = NOW() WHERE id = $2 RETURNING "+nodeColumns,
 		newParentID, id)
-	return scanNode(row.Scan)
+	node, err := scanNode(row.Scan)
+	if err != nil {
+		return Node{}, err
+	}
+
+	return node, tx.Commit(ctx)
 }
 
 // SoftDeleteSubtree sets deleted_at on a node and all its descendants.
@@ -105,37 +164,14 @@ func (d *DB) SoftDeleteSubtree(ctx context.Context, id int64) error {
 	return err
 }
 
-// GetDescendantIDs returns the IDs of a node and all its descendants.
-// Used to detect move cycles before committing a move.
-func (d *DB) GetDescendantIDs(ctx context.Context, id int64) ([]int64, error) {
-	rows, err := d.pool.Query(ctx, `
-		WITH RECURSIVE subtree AS (
-			SELECT id FROM nodes WHERE id = $1
-			UNION ALL
-			SELECT n.id FROM nodes n
-			JOIN subtree s ON n.parent_id = s.id
-		)
-		SELECT id FROM subtree
-	`, id)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var ids []int64
-	for rows.Next() {
-		var id int64
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
+// ListTrash returns top-level trashed nodes (excludes children of already-trashed folders).
 func (d *DB) ListTrash(ctx context.Context) ([]Node, error) {
-	rows, err := d.pool.Query(ctx,
-		"SELECT "+nodeColumns+" FROM nodes WHERE deleted_at IS NOT NULL ORDER BY deleted_at DESC")
+	rows, err := d.pool.Query(ctx, `
+		SELECT `+nodeColumns+` FROM nodes n
+		WHERE n.deleted_at IS NOT NULL
+		  AND (n.parent_id IS NULL OR (SELECT deleted_at FROM nodes p WHERE p.id = n.parent_id) IS NULL)
+		ORDER BY n.deleted_at DESC
+	`)
 	if err != nil {
 		return nil, err
 	}
@@ -188,7 +224,6 @@ func (d *DB) SearchNodes(ctx context.Context, query string, parentID *int64) ([]
 	}
 	defer rows.Close()
 
-	// score is an extra column not in Node — scan it separately
 	var nodes []Node
 	for rows.Next() {
 		var n Node
@@ -201,6 +236,15 @@ func (d *DB) SearchNodes(ctx context.Context, query string, parentID *int64) ([]
 		nodes = append(nodes, n)
 	}
 	return nodes, rows.Err()
+}
+
+// BlobRefCount returns how many non-deleted nodes reference a given content hash.
+func (d *DB) BlobRefCount(ctx context.Context, hash string) (int, error) {
+	var count int
+	err := d.pool.QueryRow(ctx,
+		"SELECT COUNT(*) FROM nodes WHERE content_hash = $1 AND deleted_at IS NULL", hash,
+	).Scan(&count)
+	return count, err
 }
 
 func collectNodes(rows pgx.Rows) ([]Node, error) {
