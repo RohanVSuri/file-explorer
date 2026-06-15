@@ -78,6 +78,10 @@ export function search(q: string, parentId?: number): Promise<Node[]> {
   return apiFetch(`/search?${qs}`)
 }
 
+export function listTrash(): Promise<Node[]> {
+  return apiFetch('/trash')
+}
+
 export function restoreNode(id: number): Promise<Node> {
   return apiFetch(`/trash/${id}/restore`, { method: 'POST' })
 }

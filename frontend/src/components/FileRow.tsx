@@ -23,13 +23,49 @@ interface FileRowProps {
   style: CSSProperties
   onNavigate: (id: number) => void
   onDelete: (id: number) => void
+  onPreview: (node: Node) => void
+  draggedId: number | null
+  dragOverId: number | null
+  onDragStart: (id: number) => void
+  onDragEnd: () => void
+  onDragOver: (id: number) => void
+  onDragLeave: () => void
+  onDrop: (targetId: number) => void
 }
 
-export function FileRow({ node, style, onNavigate, onDelete }: FileRowProps) {
+export function FileRow({
+  node,
+  style,
+  onNavigate,
+  onDelete,
+  onPreview,
+  draggedId,
+  dragOverId,
+  onDragStart,
+  onDragEnd,
+  onDragOver,
+  onDragLeave,
+  onDrop,
+}: FileRowProps) {
   const isFolder = node.type === 'folder'
 
+  const className = [
+    'file-row',
+    draggedId === node.id  ? 'file-row--dragging'  : '',
+    dragOverId === node.id ? 'file-row--drag-over' : '',
+  ].filter(Boolean).join(' ')
+
   return (
-    <div style={style} className="file-row">
+    <div
+      style={style}
+      className={className}
+      draggable
+      onDragStart={(e) => { e.dataTransfer.setData('application/x-node-id', String(node.id)); onDragStart(node.id) }}
+      onDragEnd={onDragEnd}
+      onDragOver={(e) => { if (isFolder) { e.preventDefault(); onDragOver(node.id) } }}
+      onDragLeave={onDragLeave}
+      onDrop={(e) => { e.preventDefault(); if (isFolder) onDrop(node.id) }}
+    >
       <span className="file-icon">{isFolder ? '📁' : '📄'}</span>
 
       {isFolder ? (
@@ -37,9 +73,12 @@ export function FileRow({ node, style, onNavigate, onDelete }: FileRowProps) {
           {node.name}
         </button>
       ) : (
-        <a className="file-name link" href={downloadUrl(node.id)} download={node.name}>
-          {node.name}
-        </a>
+        <>
+          <button className="file-name link" onClick={() => onPreview(node)}>
+            {node.name}
+          </button>
+          <a className="file-download-icon" href={downloadUrl(node.id)} download={node.name} title="Download">⬇</a>
+        </>
       )}
 
       <span className="file-size">{formatSize(node.size)}</span>
