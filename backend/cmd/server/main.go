@@ -47,11 +47,10 @@ func run() error {
 
 	log.Printf("server running on http://localhost:%s", cfg.ServerPort)
 	srv := &http.Server{
-		Addr:         ":" + cfg.ServerPort,
-		Handler:      api.NewRouter(database, blobStore),
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 30 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              ":" + cfg.ServerPort,
+		Handler:           api.NewRouter(database, blobStore),
+		ReadHeaderTimeout: 30 * time.Second, // guards against Slowloris; does not limit body reads
+		IdleTimeout:       60 * time.Second,
 	}
 	return srv.ListenAndServe()
 }
