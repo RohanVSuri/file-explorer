@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"net/url"
 	"strconv"
 
 	"rohansuri.com/file-explorer/internal/db"
@@ -81,6 +82,7 @@ func (h *Handlers) downloadFile(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 
+	w.Header().Set("Content-Disposition", "attachment; filename*=UTF-8''"+url.PathEscape(node.Name))
 	// ServeContent handles Range requests, ETags, conditional GET, and Content-Length.
 	http.ServeContent(w, r, node.Name, node.UpdatedAt, f)
 }
