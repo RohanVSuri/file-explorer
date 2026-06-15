@@ -1,11 +1,7 @@
 [build]
-builder = "nixpacks"
-buildCommand = "go build -o server ./cmd/server"
+builder = "railpack"
 
 [deploy]
-startCommand = "./server"
+startCommand = "./out"
 healthcheckPath = "/hello"
 healthcheckTimeout = 30
-
-[[volumes]]
-mountPath = "/data"
