@@ -223,7 +223,7 @@ func (d *DB) SearchNodes(ctx context.Context, query string, parentID *int64) ([]
 		rows, err = d.pool.Query(ctx, `
 			SELECT `+nodeColumns+`, similarity(name, $1) AS score
 			FROM nodes
-			WHERE name % $1 AND deleted_at IS NULL
+			WHERE name ILIKE '%' || $1 || '%' AND deleted_at IS NULL
 			ORDER BY score DESC
 			LIMIT 20
 		`, query)
@@ -237,7 +237,7 @@ func (d *DB) SearchNodes(ctx context.Context, query string, parentID *int64) ([]
 			SELECT `+nodeColumns+`, similarity(name, $1) AS score
 			FROM nodes
 			WHERE id IN (SELECT id FROM subtree)
-			  AND name % $1
+			  AND name ILIKE '%' || $1 || '%'
 			  AND deleted_at IS NULL
 			ORDER BY score DESC
 			LIMIT 20
