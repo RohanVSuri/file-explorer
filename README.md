@@ -137,7 +137,7 @@ docker compose up -d
 cd backend && go run ./cmd/server
 
 # Start frontend dev server
-cd frontend && npm install && npm run dev
+cd frontend && bun install && bun dev
 ```
 
 The backend reads from environment variables with sensible defaults:
