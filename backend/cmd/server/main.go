@@ -49,7 +49,7 @@ func run() error {
 	srv := &http.Server{
 		Addr:              ":" + cfg.ServerPort,
 		Handler:           api.NewRouter(database, blobStore),
-		ReadHeaderTimeout: 30 * time.Second, // guards against Slowloris; does not limit body reads
+		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 	return srv.ListenAndServe()

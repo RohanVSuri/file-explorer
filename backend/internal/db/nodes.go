@@ -185,9 +185,33 @@ func (d *DB) RestoreNode(ctx context.Context, id int64) (Node, error) {
 	return scanNode(row.Scan)
 }
 
-func (d *DB) HardDeleteNode(ctx context.Context, id int64) error {
-	_, err := d.pool.Exec(ctx, "DELETE FROM nodes WHERE id = $1", id)
-	return err
+// HardDeleteSubtree permanently removes a node and all its descendants.
+// Returns the content_hashes of deleted file nodes for blob cleanup.
+func (d *DB) HardDeleteSubtree(ctx context.Context, id int64) ([]string, error) {
+	rows, err := d.pool.Query(ctx, `
+		WITH RECURSIVE subtree AS (
+			SELECT id FROM nodes WHERE id = $1
+			UNION ALL
+			SELECT n.id FROM nodes n JOIN subtree s ON n.parent_id = s.id
+		)
+		DELETE FROM nodes WHERE id IN (SELECT id FROM subtree)
+		RETURNING content_hash
+	`, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var hashes []string
+	for rows.Next() {
+		var h *string
+		if err := rows.Scan(&h); err != nil {
+			return nil, err
+		}
+		if h != nil {
+			hashes = append(hashes, *h)
+		}
+	}
+	return hashes, rows.Err()
 }
 
 func (d *DB) SearchNodes(ctx context.Context, query string, parentID *int64) ([]Node, error) {

@@ -222,23 +222,16 @@ func (h *Handlers) permanentDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fetch the node to get the content_hash before deleting.
-	node, err := h.db.GetNode(r.Context(), id)
+	hashes, err := h.db.HardDeleteSubtree(r.Context(), id)
 	if err != nil {
 		handleDBError(w, err)
 		return
 	}
 
-	if err := h.db.HardDeleteNode(r.Context(), id); err != nil {
-		handleDBError(w, err)
-		return
-	}
-
-	// Delete the blob if this was a file and no other node references the hash.
-	if node.ContentHash != nil {
-		count, err := h.db.BlobRefCount(r.Context(), *node.ContentHash)
-		if err == nil && count == 0 {
-			h.store.Delete(*node.ContentHash)
+	// Clean up any blobs that are no longer referenced by any remaining node.
+	for _, hash := range hashes {
+		if count, err := h.db.BlobRefCount(r.Context(), hash); err == nil && count == 0 {
+			h.store.Delete(hash)
 		}
 	}
 
