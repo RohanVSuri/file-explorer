@@ -1,0 +1,11 @@
+[build]
+builder = "nixpacks"
+buildCommand = "go build -o server ./cmd/server"
+
+[deploy]
+startCommand = "./server"
+healthcheckPath = "/hello"
+healthcheckTimeout = 30
+
+[[volumes]]
+mountPath = "/data"
