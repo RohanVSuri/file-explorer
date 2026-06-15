@@ -473,10 +473,93 @@ func TestBlobRefCount_DropsToZeroAfterDelete(t *testing.T) {
 
 	hash := "uniquehash123"
 	node, _ := d.InsertNode(ctx, db.InsertNodeParams{Name: "only.txt", Type: "file", ContentHash: &hash})
-	d.HardDeleteNode(ctx, node.ID)
+	d.HardDeleteSubtree(ctx, node.ID)
 
 	count, _ := d.BlobRefCount(ctx, hash)
 	if count != 0 {
 		t.Errorf("want refcount 0 after hard delete, got %d", count)
+	}
+}
+
+// --- HardDeleteSubtree ---
+
+func TestHardDeleteSubtree_SingleFile(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	node, err := d.InsertNode(ctx, db.InsertNodeParams{Name: "lone.txt", Type: "file", ContentHash: ptr("hashA")})
+	if err != nil {
+		t.Fatalf("InsertNode: %v", err)
+	}
+
+	if _, err := d.HardDeleteSubtree(ctx, node.ID); err != nil {
+		t.Fatalf("HardDeleteSubtree: %v", err)
+	}
+
+	if _, err := d.GetNode(ctx, node.ID); !errors.Is(err, db.ErrNotFound) {
+		t.Errorf("want ErrNotFound after hard delete, got %v", err)
+	}
+}
+
+// Regression: deleting a folder that has descendant files must not fail with a
+// FK violation. This is the exact scenario that returned 500 before the fix.
+func TestHardDeleteSubtree_FolderWithNestedFiles(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	root, _ := d.InsertNode(ctx, db.InsertNodeParams{Name: "root", Type: "folder"})
+	sub, _ := d.InsertNode(ctx, db.InsertNodeParams{Name: "sub", Type: "folder", ParentID: &root.ID})
+	file, _ := d.InsertNode(ctx, db.InsertNodeParams{Name: "file.txt", Type: "file", ParentID: &sub.ID, ContentHash: ptr("hashZ")})
+
+	// Soft-delete the subtree first (mirrors what the trash flow does).
+	if err := d.SoftDeleteSubtree(ctx, root.ID); err != nil {
+		t.Fatalf("SoftDeleteSubtree: %v", err)
+	}
+
+	hashes, err := d.HardDeleteSubtree(ctx, root.ID)
+	if err != nil {
+		t.Fatalf("HardDeleteSubtree: %v", err)
+	}
+
+	// All three nodes must be gone.
+	for _, id := range []int64{root.ID, sub.ID, file.ID} {
+		if _, err := d.GetNode(ctx, id); !errors.Is(err, db.ErrNotFound) {
+			t.Errorf("node %d: want ErrNotFound, got %v", id, err)
+		}
+	}
+
+	// The file's hash must be in the returned slice.
+	found := false
+	for _, h := range hashes {
+		if h == "hashZ" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected hash %q in returned hashes %v", "hashZ", hashes)
+	}
+}
+
+func TestHardDeleteSubtree_ReturnsHashes(t *testing.T) {
+	d := testDB(t)
+	ctx := context.Background()
+
+	folder, _ := d.InsertNode(ctx, db.InsertNodeParams{Name: "folder", Type: "folder"})
+	d.InsertNode(ctx, db.InsertNodeParams{Name: "a.txt", Type: "file", ParentID: &folder.ID, ContentHash: ptr("hash1")})
+	d.InsertNode(ctx, db.InsertNodeParams{Name: "b.txt", Type: "file", ParentID: &folder.ID, ContentHash: ptr("hash2")})
+
+	hashes, err := d.HardDeleteSubtree(ctx, folder.ID)
+	if err != nil {
+		t.Fatalf("HardDeleteSubtree: %v", err)
+	}
+
+	got := make(map[string]bool)
+	for _, h := range hashes {
+		got[h] = true
+	}
+	for _, want := range []string{"hash1", "hash2"} {
+		if !got[want] {
+			t.Errorf("hash %q missing from returned hashes %v", want, hashes)
+		}
 	}
 }

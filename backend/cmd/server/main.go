@@ -16,6 +16,7 @@ type config struct {
 	ServerPort  string
 	DatabaseURL string
 	DataDir     string
+	FrontendURL string
 }
 
 func main() {
@@ -29,6 +30,7 @@ func run() error {
 		ServerPort:  getEnv("PORT", "8080"),
 		DatabaseURL: getEnv("DATABASE_URL", "postgres://user:password@localhost:5432/file-explorer"),
 		DataDir:     getEnv("DATA_DIR", "./data"),
+		FrontendURL: getEnv("FRONTEND_URL", "http://localhost:5173"),
 	}
 
 	ctx := context.Background()
@@ -48,7 +50,7 @@ func run() error {
 	log.Printf("server running on http://localhost:%s", cfg.ServerPort)
 	srv := &http.Server{
 		Addr:              ":" + cfg.ServerPort,
-		Handler:           api.NewRouter(database, blobStore),
+		Handler:           api.NewRouter(database, blobStore, cfg.FrontendURL),
 		ReadHeaderTimeout: 30 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}

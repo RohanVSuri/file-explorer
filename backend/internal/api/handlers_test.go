@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"rohansuri.com/file-explorer/internal/api"
@@ -38,7 +39,7 @@ func testServer(t *testing.T) *httptest.Server {
 		t.Fatalf("store.New: %v", err)
 	}
 
-	srv := httptest.NewServer(api.NewRouter(database, blobStore))
+	srv := httptest.NewServer(api.NewRouter(database, blobStore, "http://localhost:5173"))
 	t.Cleanup(srv.Close)
 	return srv
 }
@@ -389,6 +390,39 @@ func TestTrash_SubtreeOnlyShowsTopLevel(t *testing.T) {
 	}
 }
 
+// Regression: permanently deleting a folder that contains files must return 204,
+// not 500. Before the HardDeleteSubtree fix this hit a FK constraint violation.
+func TestPermanentDelete_FolderWithFiles(t *testing.T) {
+	srv := testServer(t)
+
+	var folder db.Node
+	decodeJSON(t, do(t, srv, "POST", "/nodes", jsonBody(map[string]any{"name": "doomed-folder"}), "application/json").Body, &folder)
+
+	// Upload two files into the folder.
+	var f1, f2 db.Node
+	b1, ct1 := buildMultipart(t, "a.txt", "content a", &folder.ID)
+	b2, ct2 := buildMultipart(t, "b.txt", "content b", &folder.ID)
+	decodeJSON(t, do(t, srv, "POST", "/files", b1, ct1).Body, &f1)
+	decodeJSON(t, do(t, srv, "POST", "/files", b2, ct2).Body, &f2)
+
+	// Soft-delete the folder (cascades to both files).
+	do(t, srv, "DELETE", fmt.Sprintf("/nodes/%d", folder.ID), nil, "")
+
+	// Permanently delete — this must succeed (was 500 before fix).
+	res := do(t, srv, "DELETE", fmt.Sprintf("/trash/%d", folder.ID), nil, "")
+	if res.StatusCode != http.StatusNoContent {
+		b, _ := io.ReadAll(res.Body)
+		t.Fatalf("permanent delete: want 204, got %d: %s", res.StatusCode, b)
+	}
+
+	// All three nodes must be gone.
+	for _, id := range []int64{folder.ID, f1.ID, f2.ID} {
+		if r := do(t, srv, "GET", fmt.Sprintf("/nodes/%d", id), nil, ""); r.StatusCode != http.StatusNotFound {
+			t.Errorf("node %d: want 404 after permanent delete, got %d", id, r.StatusCode)
+		}
+	}
+}
+
 // --- Race test ---
 
 func TestMoveNode_ConcurrentNoDeadlock(t *testing.T) {
@@ -421,5 +455,127 @@ func TestMoveNode_ConcurrentNoDeadlock(t *testing.T) {
 	res := do(t, srv, "GET", "/nodes/children", nil, "")
 	if res.StatusCode != http.StatusOK {
 		t.Errorf("tree integrity check failed: GET /nodes/children returned %d", res.StatusCode)
+	}
+}
+
+// --- Stress tests ---
+
+// 50 goroutines upload identical content with different filenames.
+// All must succeed and all must be downloadable. Proves dedup is race-safe
+// and the tmp file cleanup works correctly under concurrent load.
+func TestStress_ConcurrentDedupUpload(t *testing.T) {
+	srv := testServer(t)
+	const workers = 50
+	content := string(bytes.Repeat([]byte("dedup"), 64<<10/5))
+
+	type result struct {
+		status int
+		nodeID int64
+	}
+	results := make([]result, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			body, ct := buildMultipart(t, fmt.Sprintf("file%d.bin", i), content, nil)
+			res := do(t, srv, "POST", "/files", body, ct)
+			var node db.Node
+			if res.StatusCode == http.StatusCreated {
+				decodeJSON(t, res.Body, &node)
+			}
+			results[i] = result{res.StatusCode, node.ID}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if r.status != http.StatusCreated {
+			t.Errorf("worker %d: want 201, got %d", i, r.status)
+			continue
+		}
+		got, _ := io.ReadAll(do(t, srv, "GET", fmt.Sprintf("/files/%d/content", r.nodeID), nil, "").Body)
+		if string(got) != content {
+			t.Errorf("worker %d: downloaded content mismatch", i)
+		}
+	}
+}
+
+// 30 goroutines race to create a folder with the same name in the same parent.
+// Exactly one must win (201); all others must get 409.
+// Proves the unique index on (COALESCE(parent_id,0), name) is enforced correctly.
+func TestStress_ConcurrentUniqueNameRace(t *testing.T) {
+	srv := testServer(t)
+	const workers = 30
+
+	statuses := make([]int, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			res := do(t, srv, "POST", "/nodes", jsonBody(map[string]any{"name": "contested"}), "application/json")
+			statuses[i] = res.StatusCode
+		}(i)
+	}
+	wg.Wait()
+
+	created, conflicts := 0, 0
+	for _, s := range statuses {
+		switch s {
+		case http.StatusCreated:
+			created++
+		case http.StatusConflict:
+			conflicts++
+		default:
+			t.Errorf("unexpected status %d", s)
+		}
+	}
+	if created != 1 {
+		t.Errorf("want exactly 1 created, got %d", created)
+	}
+	if conflicts != workers-1 {
+		t.Errorf("want %d conflicts, got %d", workers-1, conflicts)
+	}
+}
+
+// 30 goroutines each upload a distinct file concurrently.
+// All must succeed and all must return the correct content when downloaded.
+func TestStress_ConcurrentUploadDifferentFiles(t *testing.T) {
+	srv := testServer(t)
+	const workers = 30
+
+	type result struct {
+		nodeID  int64
+		content string
+	}
+	results := make([]result, workers)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for i := range workers {
+		go func(i int) {
+			defer wg.Done()
+			content := fmt.Sprintf("unique content for worker %d — %s", i, strings.Repeat("x", 1024))
+			body, ct := buildMultipart(t, fmt.Sprintf("worker%d.txt", i), content, nil)
+			res := do(t, srv, "POST", "/files", body, ct)
+			if res.StatusCode != http.StatusCreated {
+				t.Errorf("worker %d: want 201, got %d", i, res.StatusCode)
+				return
+			}
+			var node db.Node
+			decodeJSON(t, res.Body, &node)
+			results[i] = result{node.ID, content}
+		}(i)
+	}
+	wg.Wait()
+
+	for i, r := range results {
+		if r.nodeID == 0 {
+			continue // upload already failed above
+		}
+		got, _ := io.ReadAll(do(t, srv, "GET", fmt.Sprintf("/files/%d/content", r.nodeID), nil, "").Body)
+		if string(got) != r.content {
+			t.Errorf("worker %d: content mismatch after concurrent upload", i)
+		}
 	}
 }
