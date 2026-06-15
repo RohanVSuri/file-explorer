@@ -1,7 +1,0 @@
-[build]
-builder = "railpack"
-
-[deploy]
-startCommand = "./out"
-healthcheckPath = "/hello"
-healthcheckTimeout = 30

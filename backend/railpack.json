@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schema.railpack.com",
+  "steps": {
+    "build": {
+      "commands": [
+        {
+          "cmd": "go build -o ./app/server ./cmd/server",
+          "customName": "Build server binary"
+        }
+      ]
+    }
+  },
+  "deploy": {
+    "startCommand": "./app/server"
+  }
+}
