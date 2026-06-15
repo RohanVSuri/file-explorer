@@ -1,0 +1,6 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "file-explorer",
+  "compatibility_date": "2022-07-12",
+  "assets": {"directory": "./dist"}
+}
